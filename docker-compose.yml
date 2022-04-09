@@ -1,0 +1,203 @@
+version: "3.8"
+
+volumes:
+  pgdata: 
+  kongadata:
+
+networks:
+  default:
+    name: cinemanut
+    driver: bridge
+
+services:
+  #################################
+  # Database Setup: Container to set up and configure DynamoDB tables
+  #################################
+  db_setup:
+    build:
+      context: ./database_setup
+      dockerfile: db_setup.Dockerfile
+    image: db-setup:ESD
+    container_name: db_setup
+    restart: "no"
+    environment:
+
+  #################################
+  # User: user microservice
+  #################################
+  user:
+    build:
+      context: ./user
+      dockerfile: user.Dockerfile
+    image: user:ESD
+    container_name: user
+    restart: always
+    environment:
+
+  #################################
+  # Activity Log: activity_log microservice
+  #################################
+  activity_log:
+    build:
+      context: ./activity_log
+      dockerfile: activity_log.Dockerfile
+    image: activity-log:ESD
+    container_name: log
+    restart: always
+    environment:
+ 
+  #################################
+  # Activity Log Consumer: activity_log_consumer microservice
+  #################################
+  activity_log_consumer:
+    build:
+      context: ./activity_log
+      dockerfile: activity_log_consumer.Dockerfile
+    image: activity-log-consumer:ESD
+    container_name: log_consumer
+    restart: always
+    environment:
+
+  #################################
+  # Playlist: playlist microservice
+  #################################
+  playlist:
+    build:
+      context: ./playlist
+      dockerfile: playlist.Dockerfile
+    image: playlist:ESD
+    container_name: playlist
+    restart: always
+    environment:
+
+  #################################
+  # Movie Local: movie_local microservice
+  #################################
+  movie_local:
+    build:
+      context: ./movie_local
+      dockerfile: movie_local.Dockerfile
+    image: movie-local:ESD
+    container_name: movie_local
+    restart: always
+    environment:
+
+  #################################
+  # Movie External: movie_external microservice
+  #################################
+  movie_external:
+    build:
+      context: ./movie_external
+      dockerfile: movie_external.Dockerfile
+    image: movie-external:ESD
+    container_name: movie_external
+    restart: always
+    environment:
+  
+  #################################
+  # Manage Movie: manage_movie complex microservice
+  #################################
+  manage_movie:
+    build:
+      context: ./manage_movie
+      dockerfile: manage_movie.Dockerfile
+    image: manage-movie:ESD
+    depends_on:
+      - movie_local
+      - movie_external
+    container_name: manage_movie
+    restart: always
+    environment:
+      movie_local_url: http://movie_local:4003/movie_local
+      movie_external_url: http://movie_external:4004/movie_external
+
+  #################################
+  # Add Rating/Review: add_rating_review complex microservice
+  #################################
+  add_rating_review:
+    build:
+      context: ./add_rating_review
+      dockerfile: add_rating_review.Dockerfile
+    image: add-rating-review:ESD
+    depends_on:
+      - movie_local
+      - user
+    container_name: add_rating_review
+    restart: always
+    environment:
+      movie_local_url: http://movie_local:4003/movie_local
+      user_url: http://user:4000/user
+
+  #######################################
+  # Postgres: Kong database for config
+  #######################################
+  kong-database:
+    image: postgres:9.6
+    container_name: kong_database
+    restart: always
+    environment:
+      POSTGRES_DB: kong
+      POSTGRES_USER: kong
+      POSTGRES_PASSWORD: password
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "kong"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+
+  #######################################
+  # Kong database migration
+  #######################################
+  kong-migration:
+    image: kong:2.0.4
+    command: "kong migrations bootstrap"
+    container_name: kong-database-setup
+    restart: on-failure
+    environment:
+      KONG_DATABASE: postgres
+      KONG_PG_HOST: kong-database
+      KONG_PG_USER: kong
+      KONG_PG_PASSWORD: password
+    depends_on:
+      - kong-database
+
+  #######################################
+  # Kong: The API Gateway
+  #######################################
+  kong:
+    image: kong:2.0.4
+    container_name: kong
+    restart: always
+    environment:
+      KONG_DATABASE: postgres
+      KONG_PG_HOST: kong-database
+      KONG_PG_USER: kong
+      KONG_PG_PASSWORD: password
+      KONG_PROXY_LISTEN: 0.0.0.0:8000
+      KONG_ADMIN_LISTEN: 0.0.0.0:8001
+    depends_on:
+      - kong-migration
+    ports:
+      - "8000:8000"
+  
+  #######################################
+  # Konga: Kong GUI
+  #######################################
+  konga:
+    image: pantsel/konga
+    container_name: konga
+    restart: always
+    environment:
+      DB_ADAPTER: postgres
+      DB_HOST: kong-database
+      DB_USER: kong
+      DB_PASSWORD: password
+      DB_DATABASE: konga_db
+    depends_on:
+      - kong
+    ports:
+      - "1337:1337"
+    volumes:
+      - kongadata:/app/kongadata
